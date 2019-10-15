@@ -1,0 +1,17 @@
+ParameterName,Value
+seed,2
+N_trials,50
+N,7
+deltaT_sim,300
+deltaT_cntr,7200
+deltaT_hor,7200
+T_hor,12
+T_experiment,5
+solarCap_total,1
+batteryCap_total,3
+S,15
+max_load_tstep,300
+randomizeEstor0,0
+Pl_max,10
+P_max,8
+K,1
