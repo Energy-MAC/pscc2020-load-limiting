@@ -1,31 +1,39 @@
-function [pl_fore,pg_fore,pg_dist] = forecast(uG, S, params, infParams, solarFile)
+function [pl_fore,pg_fore,pg_dist,ps] = forecast(userParams, S, params, solarFile)
 %FORECAST Summary of this function goes here
 %   Detailed explanation goes here
 % create a collection of uG objects
-native_solar_freq = 60; % seconds
+
+import MicrogridDispatchSimulator.DataParsing.createUsers
+import MicrogridDispatchSimulator.Utilities.resampleBasic
+
 horizon_sec = 3600*24*params.T_experiment;
+deltaT_hor = params.deltaT_hor;
+deltaT_sim = params.deltaT_sim;
+max_load_tstep = params.max_load_tstep;
+startDay = params.startDay;
+
+% Get the load forecast
+pl_fore = loadForecast(userParams, S, horizon_sec, deltaT_hor, max_load_tstep);
 
 
-pl_fore = loadForecast(uG, S, params.deltaT_hor, params.max_load_tstep);
 
-[solar, ~] = solarForecast(native_solar_freq,horizon_sec,params.deltaT_sim,params.startDay,solarFile);
+% Get the solar irradiance forecast 
+[irradianceForecast,irradianceRealization, ~] = solarForecast(S,horizon_sec,deltaT_sim,startDay,solarFile);
+pg_dist = nan(horizon_sec/deltaT_sim,1);
+pg_dist(:) = irradianceRealization;
 
-forecasts = randi(size(solar,2),[S,1]); % JTL: should we really be randomizing over user?
-pg_fore_temp = solar(:, forecasts);
+% Rescale to forecast time scale
+irradianceForecast = resampleBasic(irradianceForecast, deltaT_sim, deltaT_hor);
 
-pg_fore = nan(params.N, horizon_sec/params.deltaT_hor,S);
-pg_dist = nan(horizon_sec/params.deltaT_sim,1);
-for n=1:params.N
-    % Pg_fore needs to be scaled by capacity
-    % selection is with replacement
-    %forecasts = randi(size(solar,2),[S,1]); % JTL: should we really be randomizing over user?
-    %pg_fore_temp = solar(:, forecasts);
-    pg_fore(n,:,:) = resampleBasic(pg_fore_temp, params.deltaT_sim, params.deltaT_hor) * uG.user(n).nPV*infParams.solarInverterCap;
-
-
+% Pg_fore needs to be scaled by capacity for each user. Units are in average kW
+% production over the time period
+users = createUsers(userParams);
+N = length(users);
+% Preallocate solar forecast
+pg_fore = nan(N, horizon_sec/deltaT_hor,S);
+for n=1:N
+    pg_fore(n,:,:) =  irradianceForecast * users(n).NPV*users(n).PVUnitCapacity/1000;
 end
 
-% Pg_dist should be unscaled but in kW, (not normalized), and not per
-% user
-dist = randi(size(solar,2),1);
-pg_dist(:) = solar(:, dist);
+% Assign probability weights to the forecasts
+ps = ones(S,1)/S;

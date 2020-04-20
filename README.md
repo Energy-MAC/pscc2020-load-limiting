@@ -2,7 +2,7 @@
 This repository provides the computational experiment to accompany the paper: Lee, Jonathan T., Anderson, Sean, Vergara, Claudio, and Callaway, Duncan. "Non-Intrusive Load Management Under Forecast Uncertainty in Energy Constrained Microgrids." *Electric Power Systems Research*, (Under Review).
 
 # License
-This code is made available under the BSD license. We request that any publications that use this code cite the paper above.
+This code is made available under the MIT license. We request that any publications that use this code cite the paper above.
 
 # Instructions
 The code requires having MATLAB 2018A or higher and CVX version 2.1 installed with a Gurobi license (see http://cvxr.com/cvx/doc/gurobi.html).
