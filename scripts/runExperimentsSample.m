@@ -1,7 +1,6 @@
-%% Run experiment to compare controllers
-expObj = ControllerPerformanceExperiment('sample');
-expObj.runExperiment('ser');
+%% Run sample experiment to compare controllers
+% Sample experiment has fewer trials than paper
+runExperiment('controllerperformance','sample');
 
-%% Run experiment for computation time
-expObj = ComputationTimeExperiment('sample');
-trials = expObj.runExperiment('ser'); % Run timing experiments in series for more accurate results
+%% Run sample experiment for computation time
+runExperiment('computationtime','sample');

@@ -1,0 +1,8 @@
+[submodule "computational-experiment-matlab"]
+	path = computational-experiment-matlab
+	url = https://github.com/leejt489/computational-experiment-matlab.git
+	branch = pscc2020-r1
+[submodule "microgrid-dispatch-simulator"]
+	path = microgrid-dispatch-simulator
+	url = https://github.com/leejt489/microgrid-dispatch-simulator.git
+	branch = pscc2020-r1

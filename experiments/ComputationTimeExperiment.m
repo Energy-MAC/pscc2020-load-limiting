@@ -3,11 +3,13 @@ classdef ComputationTimeExperiment < Experiment
     %   Detailed explanation goes here
     
     properties (SetAccess = protected, GetAccess = public)
-        Results
         Controllers = {'Deterministic','StochasticTrajectory','StochasticDP'}
         SampleN
         SampleT_hor
         SampleS
+        Metrics = {...
+            'Time',@ComputationTimeExperiment.metricTime
+            }
     end
     
     methods
@@ -33,7 +35,7 @@ classdef ComputationTimeExperiment < Experiment
             p = obj.ExperimentParams;
             
             % Read specific parameters defining the Zola Infinity units, TM
-            infParams = readKeyValue(sprintf('%scommon/infinity.csv',obj.GlobalDataFolder));
+            derParams = readKeyValue(sprintf('%scommon/der.csv',obj.GlobalDataFolder));
             
             t = readtable(sprintf('%ssample_N.csv',obj.CaseFolder),'ReadVariableNames',false);
             obj.SampleN = t{:,1};
@@ -47,17 +49,15 @@ classdef ComputationTimeExperiment < Experiment
             
             % Programmatically generate additional parameters
             
-            obj.ExperimentParams.T_experiment = ceil(obj.SampleT_hor(end)*p.deltaT_hor/(3600*24))*1; % T_experiment is used in the sizing for estimating load and solar. Set it to 7 times the max forecast time for a decent estimate.
+            obj.ExperimentParams.T_experiment = ceil(obj.SampleT_hor(end)*p.deltaT_cntr/(3600*24))*1; % T_experiment is used in the sizing for estimating load and solar. Set it to 7 times the max forecast time for a decent estimate.
 
             % Read components of the microgrid from files...
             % Get model for user types
-            userTypes = loadUserTypes(obj.GlobalDataFolder);
-          
-            uG = struct;
-            uG.userType = userTypes;
+            userTypeFolder = sprintf('%scommon/user_types/',obj.GlobalDataFolder);
+            userTypes = MicrogridDispatchSimulator.DataParsing.loadUserTypes(userTypeFolder);
             
-            obj.ExperimentParams.infParams = infParams;
-            obj.ExperimentParams.uGNoUsers = uG;
+            obj.ExperimentParams.derParams = derParams;
+            obj.ExperimentParams.userTypes = userTypes;
             obj.ExperimentParams.solarDataFile = solarDataFile;
         end
         
@@ -66,36 +66,43 @@ classdef ComputationTimeExperiment < Experiment
         % trial.
         function confoundingVars = generateConfoundingVariables(obj,trialInd)
             p = obj.ExperimentParams;
+            
+            % Define structs
             confoundingVars = struct;
             
-            confoundingVars.startDay = 4+randi(361-p.T_experiment);
-            p.startDay = confoundingVars.startDay;
+            % Choose random start day
+            startDay = 4+randi(361-p.T_experiment);
+            p.startDay = startDay;
             
-            uG = obj.ExperimentParams.uGNoUsers;
-            % Get the common daily and hourly data
-            [uG.dailyTable,uG.hourlyTable] = loadTimeTables(obj.GlobalDataFolder,p.T_experiment,p.startDay);
+            % Parameters needed for forecast
+            foreParams = struct;
+            foreParams.startDay = startDay;
+            foreParams.T_experiment = p.T_experiment;
+            foreParams.deltaT_sim = p.deltaT_sim;
+            foreParams.deltaT_hor = p.deltaT_cntr;
+            foreParams.max_load_tstep = p.max_load_tstep;
                         
             for i = 1:length(obj.SampleN)
                 N = obj.SampleN(i);
                 p.N = N;
+                [nPV,nBatteries] = assignCapacity(p);
                 
-                % Add N users to uG object
-                userTable = createUserTable(N,uG.userType);
-                userTable = assignCapacity(userTable,p,obj.ExperimentParams.infParams,uG.userType,uG.dailyTable,uG.hourlyTable,obj.ExperimentParams.solarDataFile);
-                users = getUserStruct(userTable);
-
-                uG.user = users;
-                E_max = obj.ExperimentParams.infParams.batteryEnergyCap*[users.nBatt]';
-                uGState = createInitialState(uG.user,uG.userType,uG.dailyTable{:,'type'},E_max,p.randomizeEstor0);
+                % Create users
+                userParams = struct;
+                userParams.N = p.N;
+                userParams.userTypes = p.userTypes;
+                userParams.NBatteries = nBatteries;
+                userParams.NPV = nPV;
+                userParams.BatteryUnitCapacity = p.derParams.batteryEnergyCap*1000;
+                userParams.PVUnitCapacity = p.derParams.solarInverterCap*1000;
                 
-                confoundingVars.uGs(i) = uG; % Store a uG with N users
-                confoundingVars.uGStates(i) = uGState;
+                confoundingVars.userParams(i) = userParams;
                 
                 for j = 1:length(obj.SampleS)
-                    p.S = obj.SampleS(j);
+                    S = obj.SampleS(j);
                     f = struct;
-                    [f.Pl, f.Pg] = forecast(uG,p.S,p,obj.ExperimentParams.infParams,obj.ExperimentParams.solarDataFile);
-                    
+                    %[f.Pl, f.Pg] = forecast(uG,p.S,p,obj.ExperimentParams.infParams,obj.ExperimentParams.solarDataFile);
+                    [f.Pl, f.Pg, ~, f.ps] = forecast(userParams,S,foreParams,p.solarDataFile);
                     confoundingVars.forecast(i,j) = f; % Store a forecast with S scenarios and N users
                 end
             end
@@ -122,37 +129,51 @@ classdef ComputationTimeExperiment < Experiment
         end
         
         % Simulate a trial
-        function results = simulateTrial(obj,confoundingVars,treatmentVars)
+        function results = simulateTreatment(obj,confoundingVars,treatmentVars)
             
-            % Set up initial state
-            x = confoundingVars.uGStates(treatmentVars.indN);
-            N = obj.SampleN(treatmentVars.indN);
-            x.gamma = ones(N,1);
+            import MicrogridDispatchSimulator.DataParsing.createUsers
+            import MicrogridDispatchSimulator.Models.Microgrid
+            import MicrogridDispatchSimulator.Models.MicrogridController
+            
+            p = obj.ExperimentParams;
             
             % Compute params for users
-            users = confoundingVars.uGs(treatmentVars.indN).user;
-            p = struct;
-            p.K = 1; % Meaningless argument in this context
-            p.E_max = obj.ExperimentParams.infParams.batteryEnergyCap*[users.nBatt]'; % Battery capacity of each user, kWh, Nx1 vector
-            p.Pc_max = obj.ExperimentParams.infParams.batteryInverterCap*[users.nBatt]'; % Maximum charge / discharge power of each battery; kW
+            userParams = confoundingVars.userParams(treatmentVars.indN);
+            users = createUsers(userParams);
             
-            p.Pl_max = obj.ExperimentParams.Pl_max*ones(length(users),1);  % Maximum possible load of each user, kW, Nx1 vector. JL: Make this experiment param for now. Could be computed in different ways from network data or user type. It's something that the operator has access to.
-            p.P_max = obj.ExperimentParams.P_max*ones(length(users),1); % Max power at connection. Could be same as max load, or different. Should be defined at network level.
+            % Set parameters for the microgrid
+            microgridParams.UserMaxLoad = p.Pl_max*1000;
+            microgridParams.ERestart = 0; % Dummy param for restart threshold
+            microgridParams.BatteryChargeRate = p.derParams.batteryInverterCap/p.derParams.batteryEnergyCap;
+            microgridParams.Beta = 0; % Dummy param for stiffness
+            microgridParams.BusMaxInjection = p.P_max*1000;
             
-            p.deltaT_hor = obj.ExperimentParams.deltaT_hor;
+            % Create and initialize a microgrid for the controller
+            microgrid = Microgrid(microgridParams);
+            
+            microgrid.Users = users; % Connect the users
+            microgrid.initialize();
+            
+            controlParams = struct;
+            controlParams.deltaT_cntr = p.deltaT_cntr;
+            controlParams.deltaT_hor = p.deltaT_cntr;
+            controlParams.gamma = ones(userParams.N,1);
+            controlParams.K = 0; % Dummy param for computing injection setpoint
+            
+            microgridController = MicrogridController(microgrid,treatmentVars.controller,controlParams);
             
             % Get forecast
             forecast = confoundingVars.forecast(treatmentVars.indN,treatmentVars.indS);
             
             % Get forecast only over horizon
             T_hor = treatmentVars.T_hor;
-            W.Pg = forecast.Pg(:,1:T_hor,:);
-            W.Pl = forecast.Pl(:,1:T_hor,:);
-            W.ps = ones(size(W.Pg,3),1);
+            uMGC.W.Pg = forecast.Pg(:,1:T_hor,:);
+            uMGC.W.Pl = forecast.Pl(:,1:T_hor,:);
+            uMGC.W.ps = forecast.ps;
             
             % Calculate time to compute controller decision
             t = tic;
-            u = getControlAction(treatmentVars.controller,x,W,p);
+            microgridController.update(0,uMGC);
             results = toc(t);
         end
         
@@ -160,7 +181,7 @@ classdef ComputationTimeExperiment < Experiment
     
     methods (Static)
         % Returns time to solve for each trial and test set
-        function x = metricTime(outputs,expParams)
+        function x = metricTime(outputs,expParams,trial)
             x = outputs;
         end
     end

@@ -1,2 +1,9 @@
+bin/*.exe
+bin/*.log
+bin/*.txt
+
+*debug.mat
+
 *.asv
+*.m~
 *.synctex.gz
